@@ -1,0 +1,8 @@
+numpy
+torch>=2.0
+matplotlib
+scikit-learn
+meshio
+xlrd
+pandas
+openpyxl

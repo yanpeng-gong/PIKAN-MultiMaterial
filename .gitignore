@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated checkpoints and results
+Net/
+results/
+
+# External Abaqus and FEM input data
+data/
+
+# CSV files created in the repository root by older versions of the script
+/testpoints.csv
+/Ux.csv
+/Uy.csv
+/Umag.csv
+/x1.csv
+/x2.csv
+/x_points_x2.csv
+/x_SVonMises1_x2.csv
+/x_SVonMises2_x2.csv

@@ -65,6 +65,34 @@ import xlrd
 import matplotlib.tri as tri
 import math
 import torch.nn.functional as F
+from pathlib import Path
+import argparse
+from datetime import datetime
+import pandas as pd
+
+parser = argparse.ArgumentParser(description="Train PIKAN or export results from a saved checkpoint.")
+parser.add_argument("--checkpoint", type=Path, help="Saved .pth file to load instead of training again")
+args = parser.parse_args()
+
+PROJECT_DIR = Path(__file__).resolve().parent
+MODEL_DIR = PROJECT_DIR / "Net"
+RESULTS_DIR = PROJECT_DIR / "results"
+PLOTS_DIR = RESULTS_DIR / "plots"
+ERROR_RESULTS_DIR = RESULTS_DIR / "absoluteerror"
+ABAQUS_INPUT_DIR = PROJECT_DIR / "data" / "abaqus"
+ERROR_INPUT_DIR = PROJECT_DIR / "data" / "absoluteerror"
+for directory in (MODEL_DIR, RESULTS_DIR, PLOTS_DIR, ERROR_RESULTS_DIR,
+                  ABAQUS_INPUT_DIR, ERROR_INPUT_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
+
+def inputs_available(label, paths):
+    missing = [path for path in paths if not path.is_file()]
+    if missing:
+        print(f"Skipping {label}; missing input files:")
+        for path in missing:
+            print(f"  {path}")
+        return False
+    return True
 
 #random seed 定义设置随机数种子的函数
 def setup_seed(seed):
@@ -816,135 +844,146 @@ loss2_array = [] #材料 2中势能变化历史
 loss_internal_array = [] #总模型内能历史
 loss_external_array = [] #总模型外力功历史
 
-#三角形积分配点
-Xf1_J, Xf2_J, dirichletBC, neumannBC, neumannBC1, neumannBC2 = train_data(Nx, Ny)
-Xf1 = torch.from_numpy(Xf1_J[:,0:2]).float() # 将 data中的前两个维度放入X作为输入
-J1 = torch.from_numpy(Xf1_J[:,2, np.newaxis]).float()
-Xf2 = torch.from_numpy(Xf2_J[:,0:2]).float() # 将 data中的前两个维度放入X作为输入
-J2 = torch.from_numpy(Xf2_J[:,2, np.newaxis]).float()
+if args.checkpoint is None:
+    #三角形积分配点
+    Xf1_J, Xf2_J, dirichletBC, neumannBC, neumannBC1, neumannBC2 = train_data(Nx, Ny)
+    Xf1 = torch.from_numpy(Xf1_J[:,0:2]).float() # 将 data中的前两个维度放入X作为输入
+    J1 = torch.from_numpy(Xf1_J[:,2, np.newaxis]).float()
+    Xf2 = torch.from_numpy(Xf2_J[:,0:2]).float() # 将 data中的前两个维度放入X作为输入
+    J2 = torch.from_numpy(Xf2_J[:,2, np.newaxis]).float()
     
-# 将 Xf1 和 Xf2 设置为 requires_grad=True 并移动到 GPU
-Xf1 = Xf1.requires_grad_(True).to(device='cuda')
-Xf2 = Xf2.requires_grad_(True).to(device='cuda')
-# 将 J1 和 J2 仅移动到 GPU
-J1 = J1.to(device='cuda')
-J2 = J2.to(device='cuda')
+    # 将 Xf1 和 Xf2 设置为 requires_grad=True 并移动到 GPU
+    Xf1 = Xf1.requires_grad_(True).to(device='cuda')
+    Xf2 = Xf2.requires_grad_(True).to(device='cuda')
+    # 将 J1 和 J2 仅移动到 GPU
+    J1 = J1.to(device='cuda')
+    J2 = J2.to(device='cuda')
 
-# -------------------------------------------------------------------------------
-#                             Dirichlet BC
-# -------------------------------------------------------------------------------
-dirBC_coordinates = {}  # declare a dictionary
-dirBC_values = {}  # declare a dictionary
-for i, keyi in enumerate(dirichletBC):
-    dirBC_coordinates[i] = torch.from_numpy(dirichletBC[keyi]['coord']).float().to(device='cuda')
-    dirBC_values[i] = torch.from_numpy(dirichletBC[keyi]['known_value']).float().to(device='cuda')
-# -------------------------------------------------------------------------------
-#                           Neumann BC
-# -------------------------------------------------------------------------------
-neuBC_coordinates = {}  # declare a dictionary
-neuBC_values = {}  # declare a dictionary
-for i, keyi in enumerate(neumannBC):
-    neuBC_coordinates[i] = torch.from_numpy(neumannBC[keyi]['coord']).float().to(device='cuda')
-    neuBC_coordinates[i].requires_grad_(True) # 这里感觉不用设置梯度为True
-    neuBC_values[i] = torch.from_numpy(neumannBC[keyi]['known_value']).float().to(device='cuda')
+    # -------------------------------------------------------------------------------
+    #                             Dirichlet BC
+    # -------------------------------------------------------------------------------
+    dirBC_coordinates = {}  # declare a dictionary
+    dirBC_values = {}  # declare a dictionary
+    for i, keyi in enumerate(dirichletBC):
+        dirBC_coordinates[i] = torch.from_numpy(dirichletBC[keyi]['coord']).float().to(device='cuda')
+        dirBC_values[i] = torch.from_numpy(dirichletBC[keyi]['known_value']).float().to(device='cuda')
+    # -------------------------------------------------------------------------------
+    #                           Neumann BC
+    # -------------------------------------------------------------------------------
+    neuBC_coordinates = {}  # declare a dictionary
+    neuBC_values = {}  # declare a dictionary
+    for i, keyi in enumerate(neumannBC):
+        neuBC_coordinates[i] = torch.from_numpy(neumannBC[keyi]['coord']).float().to(device='cuda')
+        neuBC_coordinates[i].requires_grad_(True) # 这里感觉不用设置梯度为True
+        neuBC_values[i] = torch.from_numpy(neumannBC[keyi]['known_value']).float().to(device='cuda')
 
-neuBC_coordinates1 = {}  # declare a dictionary
-neuBC_values1 = {}  # declare a dictionary
-for i, keyi in enumerate(neumannBC1):
-    neuBC_coordinates1[i] = torch.from_numpy(neumannBC1[keyi]['coord']).float().to(device='cuda')
-    #neuBC_coordinates1[i].requires_grad_(True) # 这里感觉不用设置梯度为True
-    neuBC_values1[i] = torch.from_numpy(neumannBC1[keyi]['known_value']).float().to(device='cuda')
+    neuBC_coordinates1 = {}  # declare a dictionary
+    neuBC_values1 = {}  # declare a dictionary
+    for i, keyi in enumerate(neumannBC1):
+        neuBC_coordinates1[i] = torch.from_numpy(neumannBC1[keyi]['coord']).float().to(device='cuda')
+        #neuBC_coordinates1[i].requires_grad_(True) # 这里感觉不用设置梯度为True
+        neuBC_values1[i] = torch.from_numpy(neumannBC1[keyi]['known_value']).float().to(device='cuda')
 
-neuBC_coordinates2 = {}  # declare a dictionary
-neuBC_values2 = {}  # declare a dictionary
-for i, keyi in enumerate(neumannBC2):
-    neuBC_coordinates2[i] = torch.from_numpy(neumannBC2[keyi]['coord']).float().to(device='cuda')
-    #neuBC_coordinates2[i].requires_grad_(True) # 这里感觉不用设置梯度为True
-    neuBC_values2[i] = torch.from_numpy(neumannBC2[keyi]['known_value']).float().to(device='cuda')
+    neuBC_coordinates2 = {}  # declare a dictionary
+    neuBC_values2 = {}  # declare a dictionary
+    for i, keyi in enumerate(neumannBC2):
+        neuBC_coordinates2[i] = torch.from_numpy(neumannBC2[keyi]['coord']).float().to(device='cuda')
+        #neuBC_coordinates2[i].requires_grad_(True) # 这里感觉不用设置梯度为True
+        neuBC_values2[i] = torch.from_numpy(neumannBC2[keyi]['known_value']).float().to(device='cuda')
     
-# ----------------------------------------------------------------------------------
-# Minimizing loss function (energy and boundary conditions)
-# ----------------------------------------------------------------------------------
-neo0 = EnergyModel('elasticityMP', dim, E1, nu1) #计算上区域材料的应变能的类
-neo1 = EnergyModel('elasticityMP', dim, E2, nu2) #计算下区域材料的应变能的类
-intLoss = IntegrationLoss('simpson', dim)
-nepoch_u0 = int(nepoch_u0)
-start = time.time() #记录训练开始的时间
-for epoch in range(nepoch_u0):   
-    def closure():
-        # ----------------------------------------------------------------------------------
-        # Internal Energy
-        # ----------------------------------------------------------------------------------
-        #使用 pred 函数对两个域的点进行预测
-        u_pred1 = pred(Xf1) #材料 1域位移
-        u_pred2 = pred(Xf2) #材料 2域位移
-        #计算应变能     
-        storedEnergy1 = neo0.getStoredEnergy(u_pred1, Xf1) #计算材料1域的应变能
-        storedEnergy2 = neo1.getStoredEnergy(u_pred2, Xf2) #计算材料2域的应变能
+    # ----------------------------------------------------------------------------------
+    # Minimizing loss function (energy and boundary conditions)
+    # ----------------------------------------------------------------------------------
+    neo0 = EnergyModel('elasticityMP', dim, E1, nu1) #计算上区域材料的应变能的类
+    neo1 = EnergyModel('elasticityMP', dim, E2, nu2) #计算下区域材料的应变能的类
+    intLoss = IntegrationLoss('simpson', dim)
+    nepoch_u0 = int(nepoch_u0)
+    start = time.time() #记录训练开始的时间
+    for epoch in range(nepoch_u0):
+        def closure():
+            # ----------------------------------------------------------------------------------
+            # Internal Energy
+            # ----------------------------------------------------------------------------------
+            #使用 pred 函数对两个域的点进行预测
+            u_pred1 = pred(Xf1) #材料 1域位移
+            u_pred2 = pred(Xf2) #材料 2域位移
+            #计算应变能
+            storedEnergy1 = neo0.getStoredEnergy(u_pred1, Xf1) #计算材料1域的应变能
+            storedEnergy2 = neo1.getStoredEnergy(u_pred2, Xf2) #计算材料2域的应变能
         
-        internal1 = ele2d(storedEnergy1, J1)
-        internal2 = ele2d(storedEnergy2, J2)
+            internal1 = ele2d(storedEnergy1, J1)
+            internal2 = ele2d(storedEnergy2, J2)
         
-        # ----------------------------------------------------------------------------------
-        # External Energy
-        # ----------------------------------------------------------------------------------
-        external = torch.zeros(len(neuBC_coordinates))
-        for i, vali in enumerate(neuBC_coordinates):
-            neu_ust_pred = pred(neuBC_coordinates[i])
-            neu_u_pred = neu_ust_pred[:,(0, 1)]
-            fext = torch.bmm((neu_u_pred).unsqueeze(1), neuBC_values[i].unsqueeze(2))
-            external[i] = intLoss.lossExternalEnergy(fext, dx=dxdy[1])
+            # ----------------------------------------------------------------------------------
+            # External Energy
+            # ----------------------------------------------------------------------------------
+            external = torch.zeros(len(neuBC_coordinates))
+            for i, vali in enumerate(neuBC_coordinates):
+                neu_ust_pred = pred(neuBC_coordinates[i])
+                neu_u_pred = neu_ust_pred[:,(0, 1)]
+                fext = torch.bmm((neu_u_pred).unsqueeze(1), neuBC_values[i].unsqueeze(2))
+                external[i] = intLoss.lossExternalEnergy(fext, dx=dxdy[1])
         
-        energy_loss = internal1 + internal2 - torch.sum(external) #整个计算域势能
+            energy_loss = internal1 + internal2 - torch.sum(external) #整个计算域势能
         
-        external1 = torch.zeros(len(neuBC_coordinates1))
-        for i, vali in enumerate(neuBC_coordinates1):
-            neu_ust_pred1 = pred(neuBC_coordinates1[i])
-            neu_u_pred1 = neu_ust_pred1[:,(0, 1)]
-            fext1 = torch.bmm((neu_u_pred1).unsqueeze(1), neuBC_values1[i].unsqueeze(2))
-            external1[i] = intLoss.lossExternalEnergy(fext1, dx=dxdy[1])
+            external1 = torch.zeros(len(neuBC_coordinates1))
+            for i, vali in enumerate(neuBC_coordinates1):
+                neu_ust_pred1 = pred(neuBC_coordinates1[i])
+                neu_u_pred1 = neu_ust_pred1[:,(0, 1)]
+                fext1 = torch.bmm((neu_u_pred1).unsqueeze(1), neuBC_values1[i].unsqueeze(2))
+                external1[i] = intLoss.lossExternalEnergy(fext1, dx=dxdy[1])
             
-        external2 = torch.zeros(len(neuBC_coordinates2))
-        for i, vali in enumerate(neuBC_coordinates2):
-            neu_ust_pred2 = pred(neuBC_coordinates2[i])
-            neu_u_pred2 = neu_ust_pred2[:,(0, 1)]
-            fext2 = torch.bmm((neu_u_pred2).unsqueeze(1), neuBC_values2[i].unsqueeze(2))
-            external2[i] = intLoss.lossExternalEnergy(fext2, dx=dxdy[1])
+            external2 = torch.zeros(len(neuBC_coordinates2))
+            for i, vali in enumerate(neuBC_coordinates2):
+                neu_ust_pred2 = pred(neuBC_coordinates2[i])
+                neu_u_pred2 = neu_ust_pred2[:,(0, 1)]
+                fext2 = torch.bmm((neu_u_pred2).unsqueeze(1), neuBC_values2[i].unsqueeze(2))
+                external2[i] = intLoss.lossExternalEnergy(fext2, dx=dxdy[1])
         
         
-        energy_loss1 = internal1 #材料 1势能
-        energy_loss2 = internal2 #材料 2势能
-        internal_loss = internal1 + internal2 #模型内能
-        external_loss = torch.sum(external) #模型外力功
+            energy_loss1 = internal1 #材料 1势能
+            energy_loss2 = internal2 #材料 2势能
+            internal_loss = internal1 + internal2 #模型内能
+            external_loss = torch.sum(external) #模型外力功
         
-        loss = energy_loss
-        optimizer.zero_grad()
-        loss.backward()
-        loss_array.append(loss.data.cpu())
-        loss1_array.append(energy_loss1.data.cpu())
-        loss2_array.append(energy_loss2.data.cpu())
-        loss_internal_array.append(internal_loss.data.cpu())
-        loss_external_array.append(external_loss.data.cpu())
+            loss = energy_loss
+            optimizer.zero_grad()
+            loss.backward()
+            loss_array.append(loss.data.cpu())
+            loss1_array.append(energy_loss1.data.cpu())
+            loss2_array.append(energy_loss2.data.cpu())
+            loss_internal_array.append(internal_loss.data.cpu())
+            loss_external_array.append(external_loss.data.cpu())
         
-        print('Iter: %d Loss: %.9e Internal Energy: %.9e  External Energy: %.9e  Energy1: %.9e  Energy2: %.9e' 
-              % (epoch + 1, loss.item(), (internal1 + internal2).item(), torch.sum(external).item(), energy_loss1.item(), energy_loss2.item()))
-        return loss
-    optimizer.step(closure)
-    #scheduler.step()
-end = time.time()
-consume_time = end-start #记录当前时间，并计算从训练开始到现在的总耗时。
-print('time is %f' % consume_time)
+            print('Iter: %d Loss: %.9e Internal Energy: %.9e  External Energy: %.9e  Energy1: %.9e  Energy2: %.9e'
+                  % (epoch + 1, loss.item(), (internal1 + internal2).item(), torch.sum(external).item(), energy_loss1.item(), energy_loss2.item()))
+            return loss
+        optimizer.step(closure)
+        #scheduler.step()
+    end = time.time()
+    consume_time = end-start #记录当前时间，并计算从训练开始到现在的总耗时。
+    print('time is %f' % consume_time)
 
-# 保存训练好的网络
-# Save the trained networks
-from datetime import datetime
-current_time = datetime.now().strftime("%Y%m%d_%H%M%S") # current_time变量将存储一个格式化的当前时间字符串，例如 20231211_235959。
-torch.save(model_k.state_dict(), f'./Net/model_k_triangle_grid10order3{current_time}.pth')
+    # 保存训练好的网络
+    # Save the trained networks
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S") # current_time变量将存储一个格式化的当前时间字符串，例如 20231211_235959。
+    checkpoint_path = MODEL_DIR / f"model_k_triangle_grid10order3{current_time}.pth"
+    torch.save(model_k.state_dict(), checkpoint_path)
+    print(f"Saved checkpoint: {checkpoint_path}")
+
+else:
+    checkpoint_path = args.checkpoint.expanduser()
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = PROJECT_DIR / checkpoint_path
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # 恢复训练好的神经网络模型
 model_k = KAN(model, base_activation=torch.nn.SiLU, grid_size=10, grid_range=[0, 1], spline_order=3).to(device)
-model_k.load_state_dict(torch.load(f'./NET/model_k_triangle_grid10order3{current_time}.pth'))
+model_k.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+model_k.eval()
+print(f"Loaded checkpoint: {checkpoint_path}")
 
 # 计算总参数数量
 total_params = sum(p.numel() for p in model_k.parameters())
@@ -989,10 +1028,10 @@ Ux = U[:, 0].copy() # 整个计算域配点x方向位移
 Uy = U[:, 1].copy()
 # 计算绝对位移 Umag
 Umag = np.sqrt(Ux**2 + Uy**2)
-np.savetxt("testpoints.csv", testpoints, delimiter=',', fmt='%f')
-np.savetxt("Ux.csv", Ux, delimiter=',', fmt='%f')
-np.savetxt("Uy.csv", Uy, delimiter=',', fmt='%f')
-np.savetxt("Umag.csv", Umag, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "testpoints.csv", testpoints, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "Ux.csv", Ux, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "Uy.csv", Uy, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "Umag.csv", Umag, delimiter=',', fmt='%f')
 
 from matplotlib import cm #cm：matplotlib 的颜色映射模块，用于定义颜色映射表
 from matplotlib.ticker import LinearLocator, FixedLocator, ScalarFormatter
@@ -1042,10 +1081,9 @@ plot_contour(ax[0], Ux, '', -0.022515, 0.045339, fontsize=17, tick_fontsize=15.5
 # 绘制第二个子图
 plot_contour(ax[1], Uy, '', -0.188, 0.0, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
 
-save_path = 'C:/Users/yanpe/Desktop/PIKAN/论文/PIKAN/图片/two_beam/pdf/' #定义保存图像的路径
-plt.savefig(save_path + 'beam_line_PIKAN-uxuy.pdf', format='pdf', bbox_inches='tight', dpi=800) #bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
+plt.savefig(PLOTS_DIR / 'beam_line_PIKAN-uxuy.pdf', format='pdf', bbox_inches='tight', dpi=800) #bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
 
-plt.show()
+plt.close(fig)
 
 
 #设置绘图时使用的字体为 Times New Roman，并将全局字体大小设置为 12。这会影响图表中的标题、坐标轴标签、刻度标签等的字体样式。
@@ -1093,269 +1131,268 @@ plot_contour(ax[0], Umag, '', 0.0, 0.19287, fontsize=17, tick_fontsize=15.5, cba
 ax[1].axis('off')  # 关闭坐标轴
 ax[1].set_visible(False)  # 设置子图不可见
 
-save_path = 'C:/Users/MI/Desktop/图片/' #定义保存图像的路径
-plt.savefig(save_path + 'beam_line_PIKAN-umag.pdf', format='pdf', bbox_inches='tight', dpi=1200) #bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
+plt.savefig(PLOTS_DIR / 'beam_line_PIKAN-umag.pdf', format='pdf', bbox_inches='tight', dpi=1200) #bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
 
-plt.show()
+plt.close(fig)
+
+if loss_array:
+    # loss_array、loss1_array 和 loss2_array 是包含 torch.Tensor 的列表
+    # 将 tensor 转换为纯数值
+    loss_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss_array]
+    loss1_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss1_array]
+    loss2_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss2_array]
+    loss_internal_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss_internal_array]
+    loss_external_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss_external_array]
+
+    # 创建一个 DataFrame 来存储这些数据
+    data = {
+        "迭代次数": list(range(len(loss_array))),  # 假设所有数组长度相同
+        "总模型势能": loss_array,
+        "材料 1 应变能": loss1_array,
+        "材料 2 应变能": loss2_array,
+        "总模型应变能": loss_internal_array,
+        "总模型外力功": loss_external_array
+    }
+
+    df = pd.DataFrame(data)
+
+    # 保存为 Excel 文件
+    excel_file = RESULTS_DIR / "Losshistory.xlsx"
+    df.to_excel(excel_file, index=False, engine="openpyxl")
+
+    # plot the prediction solution
+    fig = plt.figure(figsize=(20, 20))
+
+    plt.subplot(2, 2, 1)
+    #plt.yscale('log') #将y轴设置为对数刻度（log scale）。    无法使用log，因为损失是负数
+    plt.grid(axis='y')
+    plt.plot(loss1_array, ls = '--')
+    plt.legend(['loss1'], loc = 'upper right')
+    plt.xlabel('the iteration') #设置x轴的标签为 “the iteration”，表示横轴表示的是迭代次数
+    plt.ylabel('loss') #设置y轴的标签为 “loss”，表示纵轴表示的是损失值。
+    plt.title('loss1', fontsize = 20)
+
+    plt.subplot(2, 2, 2)
+    #plt.yscale('log')
+    plt.grid(axis='y') #在y轴方向添加网格线，便于观察y轴的变化。
+    plt.plot(loss2_array, ls = '--')
+    plt.legend(['loss2'], loc = 'upper right')
+    plt.xlabel('the iteration') #设置x轴标签为 “the iteration”，表示横轴表示的是迭代次数。
+    plt.ylabel('loss') #设置y轴标签为 “loss”，表示纵轴表示的是损失值。
+    plt.title('loss2', fontsize = 20) #设置子图的标题为“cenn external”，表示这是关于外域能量损失的图表。参数 fontsize=20：标题的字体大小为20。
+
+    plt.subplot(2, 2, 3)
+    #plt.yscale('log')
+    plt.grid(axis='y') #在y轴方向添加网格线，便于观察y轴的变化。
+    plt.plot(loss_array, ls = '--')
+    plt.legend(['loss'], loc = 'upper right')
+    plt.xlabel('the iteration') #设置x轴标签为 “the iteration”，表示横轴表示的是迭代次数。
+    plt.ylabel('loss') #设置y轴标签为 “loss”，表示纵轴表示的是损失值。
+    plt.title('loss', fontsize = 20) #设置子图的标题为“cenn external”，表示这是关于外域能量损失的图表。参数 fontsize=20：标题的字体大小为20。
+    plt.savefig(PLOTS_DIR / 'loss_history.pdf', format='pdf', bbox_inches='tight')
+    plt.close(fig)
+
 
 #FEM，通过 abaqus计算
-import pandas as pd
-# 读取 Excel 文件
-file_path1 = 'E:/ML/KINN/Numericalexample/heterogeneous_beam/line/onekan/abaqus/coord.xlsx'  #文件路径
-df1 = pd.read_excel(file_path1, header=None)  # header=None 表示文件中没有列名
-# 将 DataFrame 转换为 NumPy 数组
-coord = df1.to_numpy()
+if inputs_available("Abaqus plots", [ABAQUS_INPUT_DIR / name for name in ("coord.xlsx", "u1all.xlsx", "u2all.xlsx", "uall.xlsx")]):
+    # 读取 Excel 文件
+    file_path1 = ABAQUS_INPUT_DIR / "coord.xlsx"  #文件路径
+    df1 = pd.read_excel(file_path1, header=None)  # header=None 表示文件中没有列名
+    # 将 DataFrame 转换为 NumPy 数组
+    coord = df1.to_numpy()
 
-file_path2 = 'E:/ML/KINN/Numericalexample/heterogeneous_beam/line/onekan/abaqus/u1all.xlsx'
-df2 = pd.read_excel(file_path2, header=None)
-u1all = df2.to_numpy()
+    file_path2 = ABAQUS_INPUT_DIR / "u1all.xlsx"
+    df2 = pd.read_excel(file_path2, header=None)
+    u1all = df2.to_numpy()
 
-file_path3 = 'E:/ML/KINN/Numericalexample/heterogeneous_beam/line/onekan/abaqus/u2all.xlsx'
-df3 = pd.read_excel(file_path3, header=None)
-u2all = df3.to_numpy()
+    file_path3 = ABAQUS_INPUT_DIR / "u2all.xlsx"
+    df3 = pd.read_excel(file_path3, header=None)
+    u2all = df3.to_numpy()
 
-file_path4 = 'E:/ML/KINN/Numericalexample/heterogeneous_beam/line/onekan/abaqus/uall.xlsx'
-df4 = pd.read_excel(file_path4, header=None)
-uall = df4.to_numpy()
+    file_path4 = ABAQUS_INPUT_DIR / "uall.xlsx"
+    df4 = pd.read_excel(file_path4, header=None)
+    uall = df4.to_numpy()
 
-#设置绘图时使用的字体为 Times New Roman，并将全局字体大小设置为 12。这会影响图表中的标题、坐标轴标签、刻度标签等的字体样式。
-plt.rcParams['font.family'] = 'Times New Roman'
-plt.rcParams['font.size'] = 12
+    #设置绘图时使用的字体为 Times New Roman，并将全局字体大小设置为 12。这会影响图表中的标题、坐标轴标签、刻度标签等的字体样式。
+    plt.rcParams['font.family'] = 'Times New Roman'
+    plt.rcParams['font.size'] = 12
 
-xmin, xmax = np.min(coord[:, 0]), np.max(coord[:, 0])  # 根据数据动态调整x轴范围
-ymin, ymax = np.min(coord[:, 1]), np.max(coord[:, 1])  # 根据数据动态调整y轴范围
+    xmin, xmax = np.min(coord[:, 0]), np.max(coord[:, 0])  # 根据数据动态调整x轴范围
+    ymin, ymax = np.min(coord[:, 1]), np.max(coord[:, 1])  # 根据数据动态调整y轴范围
 
-fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(19, 1.8)) #创建一个包含两个子图的图形，排列为 1 行 2 列，整个图形的大小为宽度 12 英寸、高度 4 英寸。
-fig.subplots_adjust(hspace=0.6, wspace=0.17) #调整子图之间的间距，hspace 控制垂直方向的间距，wspace 控制水平方向的间距。
-#fig.suptitle("Elasticity_bend_Two") #在整个图形的顶部添加一个总标题
+    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(19, 1.8)) #创建一个包含两个子图的图形，排列为 1 行 2 列，整个图形的大小为宽度 12 英寸、高度 4 英寸。
+    fig.subplots_adjust(hspace=0.6, wspace=0.17) #调整子图之间的间距，hspace 控制垂直方向的间距，wspace 控制水平方向的间距。
+    #fig.suptitle("Elasticity_bend_Two") #在整个图形的顶部添加一个总标题
 
-# 定义绘制等值图函数
-def plot_contour(ax, data, title, vmin, vmax, fontsize=17, tick_fontsize=14, cbar_tick_fontsize=14):
-    # fontsize：标题和坐标轴标签的字体大小，默认为 20。tick_fontsize：坐标轴刻度的字体大小，默认为 14。cbar_tick_fontsize：颜色条刻度的字体大小，默认为 12。
-    cf = ax.scatter(coord[:, 0], coord[:, 1], s=5, c=data, cmap=cm.jet, vmin=vmin, vmax=vmax, rasterized=True)
-    ax.axis('equal')
-    cbar = plt.colorbar(cf, ax=ax, format=ScalarFormatter(useMathText=True), pad=0.03)  # 使用ScalarFormatter
-    cbar.ax.tick_params(labelsize=cbar_tick_fontsize)
+    # 定义绘制等值图函数
+    def plot_contour(ax, data, title, vmin, vmax, fontsize=17, tick_fontsize=14, cbar_tick_fontsize=14):
+        # fontsize：标题和坐标轴标签的字体大小，默认为 20。tick_fontsize：坐标轴刻度的字体大小，默认为 14。cbar_tick_fontsize：颜色条刻度的字体大小，默认为 12。
+        cf = ax.scatter(coord[:, 0], coord[:, 1], s=5, c=data, cmap=cm.jet, vmin=vmin, vmax=vmax, rasterized=True)
+        ax.axis('equal')
+        cbar = plt.colorbar(cf, ax=ax, format=ScalarFormatter(useMathText=True), pad=0.03)  # 使用ScalarFormatter
+        cbar.ax.tick_params(labelsize=cbar_tick_fontsize)
     
-    # 设置颜色条的刻度范围，确保显示最大值、最小值和中间刻度
-    ticks = LinearLocator(numticks=6)  # 指定 10个刻度
-    cbar.set_ticks(ticks.tick_values(vmin, vmax))  # 设置刻度位置
-    cbar.set_ticklabels([f"{tick:.2e}" for tick in ticks.tick_values(vmin, vmax)])  # 使用科学计数法格式化刻度标签
+        # 设置颜色条的刻度范围，确保显示最大值、最小值和中间刻度
+        ticks = LinearLocator(numticks=6)  # 指定 10个刻度
+        cbar.set_ticks(ticks.tick_values(vmin, vmax))  # 设置刻度位置
+        cbar.set_ticklabels([f"{tick:.2e}" for tick in ticks.tick_values(vmin, vmax)])  # 使用科学计数法格式化刻度标签
 
-    ax.set_xlim([xmin, xmax])
-    ax.set_ylim([ymin, ymax])
-    ax.set_title(title, fontsize=fontsize)
-    #ax.set_xlabel('x (mm)', fontsize=fontsize)
-    #ax.set_ylabel('y (mm)', fontsize=fontsize)
+        ax.set_xlim([xmin, xmax])
+        ax.set_ylim([ymin, ymax])
+        ax.set_title(title, fontsize=fontsize)
+        #ax.set_xlabel('x (mm)', fontsize=fontsize)
+        #ax.set_ylabel('y (mm)', fontsize=fontsize)
     
-    # 设置 x轴和 y轴的刻度数量
-    xticks = np.linspace(xmin, xmax, 6)
-    yticks = np.linspace(ymin, ymax, 6)
-    ax.xaxis.set_major_locator(FixedLocator(xticks))  # 设置x轴刻度位置
-    ax.yaxis.set_major_locator(FixedLocator(yticks))  # 设置y轴刻度位置
+        # 设置 x轴和 y轴的刻度数量
+        xticks = np.linspace(xmin, xmax, 6)
+        yticks = np.linspace(ymin, ymax, 6)
+        ax.xaxis.set_major_locator(FixedLocator(xticks))  # 设置x轴刻度位置
+        ax.yaxis.set_major_locator(FixedLocator(yticks))  # 设置y轴刻度位置
     
-    ax.tick_params(axis='both', which='major', labelsize=tick_fontsize, direction='in')  # 设置刻度线朝内
-    ax.axhline(y=1, color='red', linestyle='--', linewidth=1.5)
+        ax.tick_params(axis='both', which='major', labelsize=tick_fontsize, direction='in')  # 设置刻度线朝内
+        ax.axhline(y=1, color='red', linestyle='--', linewidth=1.5)
 
-# 绘制第一个子图
-plot_contour(ax[0], u1all, '', -0.0226, 0.0453, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
-# 绘制第二个子图
-plot_contour(ax[1], u2all, '', -0.188, 0.0, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
+    # 绘制第一个子图
+    plot_contour(ax[0], u1all, '', -0.0226, 0.0453, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
+    # 绘制第二个子图
+    plot_contour(ax[1], u2all, '', -0.188, 0.0, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
 
-save_path = 'C:/Users/yanpe/Desktop/PIKAN/论文/PIKAN/图片/two_beam/pdf/' #定义保存图像的路径
-plt.savefig(save_path + 'beam_line_abaqus_uxuy.pdf', format='pdf', bbox_inches='tight', dpi=800) #bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
+    plt.savefig(PLOTS_DIR / 'beam_line_abaqus_uxuy.pdf', format='pdf', bbox_inches='tight', dpi=800) #bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
 
-plt.show()
+    plt.close(fig)
 
 
-#设置绘图时使用的字体为 Times New Roman，并将全局字体大小设置为 12。这会影响图表中的标题、坐标轴标签、刻度标签等的字体样式。
-plt.rcParams['font.family'] = 'Times New Roman'
-plt.rcParams['font.size'] = 12
+    #设置绘图时使用的字体为 Times New Roman，并将全局字体大小设置为 12。这会影响图表中的标题、坐标轴标签、刻度标签等的字体样式。
+    plt.rcParams['font.family'] = 'Times New Roman'
+    plt.rcParams['font.size'] = 12
 
-xmin, xmax = np.min(coord[:, 0]), np.max(coord[:, 0])  # 根据数据动态调整x轴范围
-ymin, ymax = np.min(coord[:, 1]), np.max(coord[:, 1])  # 根据数据动态调整y轴范围
+    xmin, xmax = np.min(coord[:, 0]), np.max(coord[:, 0])  # 根据数据动态调整x轴范围
+    ymin, ymax = np.min(coord[:, 1]), np.max(coord[:, 1])  # 根据数据动态调整y轴范围
 
-fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(19, 1.8)) #创建一个包含两个子图的图形，排列为 1 行 2 列，整个图形的大小为宽度 12 英寸、高度 4 英寸。
-fig.subplots_adjust(hspace=0.6, wspace=0.17) #调整子图之间的间距，hspace 控制垂直方向的间距，wspace 控制水平方向的间距。
-#fig.suptitle("Elasticity_bend_Two") #在整个图形的顶部添加一个总标题
+    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(19, 1.8)) #创建一个包含两个子图的图形，排列为 1 行 2 列，整个图形的大小为宽度 12 英寸、高度 4 英寸。
+    fig.subplots_adjust(hspace=0.6, wspace=0.17) #调整子图之间的间距，hspace 控制垂直方向的间距，wspace 控制水平方向的间距。
+    #fig.suptitle("Elasticity_bend_Two") #在整个图形的顶部添加一个总标题
 
-# 定义绘制等值图函数
-def plot_contour(ax, data, title, vmin, vmax, fontsize=17, tick_fontsize=14, cbar_tick_fontsize=14):
-    # fontsize：标题和坐标轴标签的字体大小，默认为 20。tick_fontsize：坐标轴刻度的字体大小，默认为 14。cbar_tick_fontsize：颜色条刻度的字体大小，默认为 12。
-    cf = ax.scatter(coord[:, 0], coord[:, 1], s=5, c=data, cmap=cm.jet, vmin=vmin, vmax=vmax, rasterized=True)
-    ax.axis('equal')
-    cbar = plt.colorbar(cf, ax=ax, format=ScalarFormatter(useMathText=True), pad=0.03)  # 使用ScalarFormatter
-    cbar.ax.tick_params(labelsize=cbar_tick_fontsize)
+    # 定义绘制等值图函数
+    def plot_contour(ax, data, title, vmin, vmax, fontsize=17, tick_fontsize=14, cbar_tick_fontsize=14):
+        # fontsize：标题和坐标轴标签的字体大小，默认为 20。tick_fontsize：坐标轴刻度的字体大小，默认为 14。cbar_tick_fontsize：颜色条刻度的字体大小，默认为 12。
+        cf = ax.scatter(coord[:, 0], coord[:, 1], s=5, c=data, cmap=cm.jet, vmin=vmin, vmax=vmax, rasterized=True)
+        ax.axis('equal')
+        cbar = plt.colorbar(cf, ax=ax, format=ScalarFormatter(useMathText=True), pad=0.03)  # 使用ScalarFormatter
+        cbar.ax.tick_params(labelsize=cbar_tick_fontsize)
     
-    # 设置颜色条的刻度范围，确保显示最大值、最小值和中间刻度
-    ticks = LinearLocator(numticks=6)  # 指定 10个刻度
-    cbar.set_ticks(ticks.tick_values(vmin, vmax))  # 设置刻度位置
-    cbar.set_ticklabels([f"{tick:.2e}" for tick in ticks.tick_values(vmin, vmax)])  # 使用科学计数法格式化刻度标签
+        # 设置颜色条的刻度范围，确保显示最大值、最小值和中间刻度
+        ticks = LinearLocator(numticks=6)  # 指定 10个刻度
+        cbar.set_ticks(ticks.tick_values(vmin, vmax))  # 设置刻度位置
+        cbar.set_ticklabels([f"{tick:.2e}" for tick in ticks.tick_values(vmin, vmax)])  # 使用科学计数法格式化刻度标签
 
-    ax.set_xlim([xmin, xmax])
-    ax.set_ylim([ymin, ymax])
-    ax.set_title(title, fontsize=fontsize)
-    #ax.set_xlabel('x (mm)', fontsize=fontsize)
-    #ax.set_ylabel('y (mm)', fontsize=fontsize)
+        ax.set_xlim([xmin, xmax])
+        ax.set_ylim([ymin, ymax])
+        ax.set_title(title, fontsize=fontsize)
+        #ax.set_xlabel('x (mm)', fontsize=fontsize)
+        #ax.set_ylabel('y (mm)', fontsize=fontsize)
     
-    # 设置 x轴和 y轴的刻度数量
-    xticks = np.linspace(xmin, xmax, 6)
-    yticks = np.linspace(ymin, ymax, 6)
-    ax.xaxis.set_major_locator(FixedLocator(xticks))  # 设置x轴刻度位置
-    ax.yaxis.set_major_locator(FixedLocator(yticks))  # 设置y轴刻度位置
+        # 设置 x轴和 y轴的刻度数量
+        xticks = np.linspace(xmin, xmax, 6)
+        yticks = np.linspace(ymin, ymax, 6)
+        ax.xaxis.set_major_locator(FixedLocator(xticks))  # 设置x轴刻度位置
+        ax.yaxis.set_major_locator(FixedLocator(yticks))  # 设置y轴刻度位置
     
-    ax.tick_params(axis='both', which='major', labelsize=tick_fontsize, direction='in')  # 设置刻度线朝内
-    ax.axhline(y=1, color='red', linestyle='--', linewidth=1.5)
+        ax.tick_params(axis='both', which='major', labelsize=tick_fontsize, direction='in')  # 设置刻度线朝内
+        ax.axhline(y=1, color='red', linestyle='--', linewidth=1.5)
 
-plot_contour(ax[0], uall, '', 0.0, 0.193, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
+    plot_contour(ax[0], uall, '', 0.0, 0.193, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
 
-# 隐藏最后一个子图
-ax[1].axis('off')  # 关闭坐标轴
-ax[1].set_visible(False)  # 设置子图不可见
+    # 隐藏最后一个子图
+    ax[1].axis('off')  # 关闭坐标轴
+    ax[1].set_visible(False)  # 设置子图不可见
 
-save_path = 'C:/Users/MI/Desktop/图片/' #定义保存图像的路径
-plt.savefig(save_path + 'beam_line_abaqus_umag.pdf', format='pdf', bbox_inches='tight', dpi=1200) #bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
+    plt.savefig(PLOTS_DIR / 'beam_line_abaqus_umag.pdf', format='pdf', bbox_inches='tight', dpi=1200) #bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
 
-plt.show()
+    plt.close(fig)
 
-import pandas as pd
-# 读取 Excel 文件 读取 fem节点坐标
-file_path_coord = 'D:/ML/KINN/Numerical_example/heterogeneous_beam/line/onekan/result/absoluteerror/coord.xlsx'  #文件路径
-df_coord = pd.read_excel(file_path_coord, header=None)  # header=None 表示文件中没有列名
-# 将 DataFrame 转换为 NumPy 数组
-femcoord = df_coord.to_numpy()
+if inputs_available("FEM point predictions", [ERROR_INPUT_DIR / "coord.xlsx"]):
+    # 读取 Excel 文件 读取 fem节点坐标
+    file_path_coord = ERROR_INPUT_DIR / "coord.xlsx"  #文件路径
+    df_coord = pd.read_excel(file_path_coord, header=None)  # header=None 表示文件中没有列名
+    # 将 DataFrame 转换为 NumPy 数组
+    femcoord = df_coord.to_numpy()
 
-femcoord = torch.from_numpy(femcoord).float()
-femcoord = femcoord.to(device='cuda')
-predforerror = testpred(femcoord)
-Uforerror = predforerror.detach().cpu().numpy()
-Uxforerror = Uforerror[:, 0].copy() # 整个计算域配点x方向位移
-Uyforerror = Uforerror[:, 1].copy()
-save_path = "D:/ML/KINN/Numerical_example/heterogeneous_beam/line/onekan/result/absoluteerror/"
-np.savetxt(save_path + "Uxforerror.csv", Uxforerror, delimiter=',', fmt='%f')
-np.savetxt(save_path + "Uyforerror.csv", Uyforerror, delimiter=',', fmt='%f')
+    femcoord = torch.from_numpy(femcoord).float()
+    femcoord = femcoord.to(device='cuda')
+    predforerror = testpred(femcoord)
+    Uforerror = predforerror.detach().cpu().numpy()
+    Uxforerror = Uforerror[:, 0].copy() # 整个计算域配点x方向位移
+    Uyforerror = Uforerror[:, 1].copy()
+    np.savetxt(ERROR_RESULTS_DIR / "Uxforerror.csv", Uxforerror, delimiter=',', fmt='%f')
+    np.savetxt(ERROR_RESULTS_DIR / "Uyforerror.csv", Uyforerror, delimiter=',', fmt='%f')
 
-# 与 abaqus_fem解计算完绝对误差后，读取 Excel 文件，画绝对误差图
-file_path_coord = 'D:/ML/KINN/Numerical_example/heterogeneous_beam/line/onekan/result/absoluteerror/coord.xlsx'  #文件路径
-df_coord = pd.read_excel(file_path_coord, header=None)  # header=None 表示文件中没有列名
-# 将 DataFrame 转换为 NumPy 数组
-femcoord = df_coord.to_numpy()
+if inputs_available("absolute-error plots", [ERROR_INPUT_DIR / name for name in ("coord.xlsx", "absoluteerror_ux.xlsx", "absoluteerror_uy.xlsx")]):
+    # 与 abaqus_fem解计算完绝对误差后，读取 Excel 文件，画绝对误差图
+    file_path_coord = ERROR_INPUT_DIR / "coord.xlsx"  #文件路径
+    df_coord = pd.read_excel(file_path_coord, header=None)  # header=None 表示文件中没有列名
+    # 将 DataFrame 转换为 NumPy 数组
+    femcoord = df_coord.to_numpy()
 
-file_path_ux = 'D:/ML/KINN/Numerical_example/heterogeneous_beam/line/onekan/result/absoluteerror/absoluteerror_ux.xlsx'
-df_ux = pd.read_excel(file_path_ux, header=None)
-absoluteerror_ux = df_ux.to_numpy()
+    file_path_ux = ERROR_INPUT_DIR / "absoluteerror_ux.xlsx"
+    df_ux = pd.read_excel(file_path_ux, header=None)
+    absoluteerror_ux = df_ux.to_numpy()
 
-file_path_uy = 'D:/ML/KINN/Numerical_example/heterogeneous_beam/line/onekan/result/absoluteerror/absoluteerror_uy.xlsx'
-df_uy = pd.read_excel(file_path_uy, header=None)
-absoluteerror_uy = df_uy.to_numpy()
+    file_path_uy = ERROR_INPUT_DIR / "absoluteerror_uy.xlsx"
+    df_uy = pd.read_excel(file_path_uy, header=None)
+    absoluteerror_uy = df_uy.to_numpy()
 
-from matplotlib import cm #cm：matplotlib 的颜色映射模块，用于定义颜色映射表
-from matplotlib.ticker import LinearLocator, FixedLocator, ScalarFormatter
-#LinearLocator 和 FixedLocator：用于自定义坐标轴刻度的位置。ScalarFormatter：用于格式化颜色条的刻度标签，支持数学符号显示。
-from matplotlib.font_manager import FontProperties
+    from matplotlib import cm #cm：matplotlib 的颜色映射模块，用于定义颜色映射表
+    from matplotlib.ticker import LinearLocator, FixedLocator, ScalarFormatter
+    #LinearLocator 和 FixedLocator：用于自定义坐标轴刻度的位置。ScalarFormatter：用于格式化颜色条的刻度标签，支持数学符号显示。
+    from matplotlib.font_manager import FontProperties
 
-#设置绘图时使用的字体为 Times New Roman，并将全局字体大小设置为 12。这会影响图表中的标题、坐标轴标签、刻度标签等的字体样式。
-plt.rcParams['font.family'] = 'Times New Roman'
+    #设置绘图时使用的字体为 Times New Roman，并将全局字体大小设置为 12。这会影响图表中的标题、坐标轴标签、刻度标签等的字体样式。
+    plt.rcParams['font.family'] = 'Times New Roman'
 
-xmin, xmax = np.min(femcoord[:, 0]), np.max(femcoord[:, 0])  # 根据数据动态调整x轴范围
-ymin, ymax = np.min(femcoord[:, 1]), np.max(femcoord[:, 1])  # 根据数据动态调整y轴范围
+    xmin, xmax = np.min(femcoord[:, 0]), np.max(femcoord[:, 0])  # 根据数据动态调整x轴范围
+    ymin, ymax = np.min(femcoord[:, 1]), np.max(femcoord[:, 1])  # 根据数据动态调整y轴范围
 
-fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(19, 1.8)) #创建一个包含两个子图的图形，排列为 1 行 2 列，整个图形的大小为宽度 12 英寸、高度 4 英寸。
-fig.subplots_adjust(hspace=0.6, wspace=0.17) #调整子图之间的间距，hspace 控制垂直方向的间距，wspace 控制水平方向的间距。
-#fig.suptitle("Elasticity_bend_Two") #在整个图形的顶部添加一个总标题
+    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(19, 1.8)) #创建一个包含两个子图的图形，排列为 1 行 2 列，整个图形的大小为宽度 12 英寸、高度 4 英寸。
+    fig.subplots_adjust(hspace=0.6, wspace=0.17) #调整子图之间的间距，hspace 控制垂直方向的间距，wspace 控制水平方向的间距。
+    #fig.suptitle("Elasticity_bend_Two") #在整个图形的顶部添加一个总标题
 
-# 定义绘制等值图函数
-def plot_contour(ax, data, title, vmin, vmax, fontsize=17, tick_fontsize=14, cbar_tick_fontsize=14):
-    # fontsize：标题和坐标轴标签的字体大小，默认为 20。tick_fontsize：坐标轴刻度的字体大小，默认为 14。cbar_tick_fontsize：颜色条刻度的字体大小，默认为 12。
-    cf = ax.scatter(femcoord[:, 0], femcoord[:, 1], s=5, c=data, cmap=cm.jet, vmin=vmin, vmax=vmax)
-    ax.axis('equal')
-    cbar = plt.colorbar(cf, ax=ax, format=ScalarFormatter(useMathText=True), pad=0.03)  # 使用ScalarFormatter
-    cbar.ax.tick_params(labelsize=cbar_tick_fontsize)
+    # 定义绘制等值图函数
+    def plot_contour(ax, data, title, vmin, vmax, fontsize=17, tick_fontsize=14, cbar_tick_fontsize=14):
+        # fontsize：标题和坐标轴标签的字体大小，默认为 20。tick_fontsize：坐标轴刻度的字体大小，默认为 14。cbar_tick_fontsize：颜色条刻度的字体大小，默认为 12。
+        cf = ax.scatter(femcoord[:, 0], femcoord[:, 1], s=5, c=data, cmap=cm.jet, vmin=vmin, vmax=vmax)
+        ax.axis('equal')
+        cbar = plt.colorbar(cf, ax=ax, format=ScalarFormatter(useMathText=True), pad=0.03)  # 使用ScalarFormatter
+        cbar.ax.tick_params(labelsize=cbar_tick_fontsize)
     
-    # 设置颜色条的刻度范围，确保显示最大值、最小值和中间刻度
-    ticks = LinearLocator(numticks=6)  # 指定 10个刻度
-    cbar.set_ticks(ticks.tick_values(vmin, vmax))  # 设置刻度位置
-    cbar.set_ticklabels([f"{tick:.2e}" for tick in ticks.tick_values(vmin, vmax)])  # 使用科学计数法格式化刻度标签
+        # 设置颜色条的刻度范围，确保显示最大值、最小值和中间刻度
+        ticks = LinearLocator(numticks=6)  # 指定 10个刻度
+        cbar.set_ticks(ticks.tick_values(vmin, vmax))  # 设置刻度位置
+        cbar.set_ticklabels([f"{tick:.2e}" for tick in ticks.tick_values(vmin, vmax)])  # 使用科学计数法格式化刻度标签
 
-    ax.set_xlim([xmin, xmax])
-    ax.set_ylim([ymin, ymax])
-    ax.set_title(title, fontsize=fontsize)
-    #ax.set_xlabel(r'$\mathit{x}$ (mm)', fontsize=fontsize)  # x 设置为斜体
-    #ax.set_ylabel(r'$\mathit{y}$ (mm)', fontsize=fontsize)  # y 设置为斜体
+        ax.set_xlim([xmin, xmax])
+        ax.set_ylim([ymin, ymax])
+        ax.set_title(title, fontsize=fontsize)
+        #ax.set_xlabel(r'$\mathit{x}$ (mm)', fontsize=fontsize)  # x 设置为斜体
+        #ax.set_ylabel(r'$\mathit{y}$ (mm)', fontsize=fontsize)  # y 设置为斜体
     
-    # 设置 x轴和 y轴的刻度数量
-    xticks = np.linspace(xmin, xmax, 6)
-    yticks = np.linspace(ymin, ymax, 6)
-    ax.xaxis.set_major_locator(FixedLocator(xticks))  # 设置x轴刻度位置
-    ax.yaxis.set_major_locator(FixedLocator(yticks))  # 设置y轴刻度位置
+        # 设置 x轴和 y轴的刻度数量
+        xticks = np.linspace(xmin, xmax, 6)
+        yticks = np.linspace(ymin, ymax, 6)
+        ax.xaxis.set_major_locator(FixedLocator(xticks))  # 设置x轴刻度位置
+        ax.yaxis.set_major_locator(FixedLocator(yticks))  # 设置y轴刻度位置
     
-    ax.tick_params(axis='both', which='major', labelsize=tick_fontsize, direction='in')  # 设置刻度线朝内
-    ax.axhline(y=1, color='red', linestyle='--', linewidth=1.5)
+        ax.tick_params(axis='both', which='major', labelsize=tick_fontsize, direction='in')  # 设置刻度线朝内
+        ax.axhline(y=1, color='red', linestyle='--', linewidth=1.5)
 
-# 绘制第一个子图
-plot_contour(ax[0], absoluteerror_ux, '', 0.0, 0.0004154, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
-# 绘制第二个子图
-plot_contour(ax[1], absoluteerror_uy, '', 0.0, 0.00047536, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
+    # 绘制第一个子图
+    plot_contour(ax[0], absoluteerror_ux, '', 0.0, 0.0004154, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
+    # 绘制第二个子图
+    plot_contour(ax[1], absoluteerror_uy, '', 0.0, 0.00047536, fontsize=17, tick_fontsize=15.5, cbar_tick_fontsize=15.5)
 
-save_path = 'D:/ML/KINN/Numerical_example/heterogeneous_beam/line/onekan/result/absoluteerror/' #定义保存图像的路径
-plt.savefig(save_path + 'absoluteerror_line.pdf', format='pdf', bbox_inches='tight', dpi=800)  # 保存为 PDF 格式 bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
+    plt.savefig(ERROR_RESULTS_DIR / 'absoluteerror_line.pdf', format='pdf', bbox_inches='tight', dpi=800)  # 保存为 PDF 格式 bbox_inches='tight'自动调整保存的边界范围，确保所有内容都能完整显示。
 
-plt.show()
-
-
-# loss_array、loss1_array 和 loss2_array 是包含 torch.Tensor 的列表
-# 将 tensor 转换为纯数值
-loss_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss_array]
-loss1_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss1_array]
-loss2_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss2_array]
-loss_internal_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss_internal_array]
-loss_external_array = [item.item() if isinstance(item, torch.Tensor) else item for item in loss_external_array]
-
-# 创建一个 DataFrame 来存储这些数据
-data = {
-    "迭代次数": list(range(len(loss_array))),  # 假设所有数组长度相同
-    "总模型势能": loss_array,
-    "材料 1 应变能": loss1_array,
-    "材料 2 应变能": loss2_array,
-    "总模型应变能": loss_internal_array,
-    "总模型外力功": loss_external_array
-}
-
-df = pd.DataFrame(data)
-
-# 保存为 Excel 文件
-excel_file = "D:/ML/KINN/Numericalexample/heterogeneous_beam/line/onekan/triangle/gird10-order3/Losshistory.xlsx"
-df.to_excel(excel_file, index=False, engine="openpyxl")
-
-# plot the prediction solution
-fig = plt.figure(figsize=(20, 20))
-
-plt.subplot(2, 2, 1)
-#plt.yscale('log') #将y轴设置为对数刻度（log scale）。    无法使用log，因为损失是负数
-plt.grid(axis='y')
-plt.plot(loss1_array, ls = '--')
-plt.legend(['loss1'], loc = 'upper right')
-plt.xlabel('the iteration') #设置x轴的标签为 “the iteration”，表示横轴表示的是迭代次数
-plt.ylabel('loss') #设置y轴的标签为 “loss”，表示纵轴表示的是损失值。
-plt.title('loss1', fontsize = 20)
-
-plt.subplot(2, 2, 2)
-#plt.yscale('log')
-plt.grid(axis='y') #在y轴方向添加网格线，便于观察y轴的变化。
-plt.plot(loss2_array, ls = '--')
-plt.legend(['loss2'], loc = 'upper right')
-plt.xlabel('the iteration') #设置x轴标签为 “the iteration”，表示横轴表示的是迭代次数。
-plt.ylabel('loss') #设置y轴标签为 “loss”，表示纵轴表示的是损失值。
-plt.title('loss2', fontsize = 20) #设置子图的标题为“cenn external”，表示这是关于外域能量损失的图表。参数 fontsize=20：标题的字体大小为20。
-
-plt.subplot(2, 2, 3)
-#plt.yscale('log')
-plt.grid(axis='y') #在y轴方向添加网格线，便于观察y轴的变化。
-plt.plot(loss_array, ls = '--')
-plt.legend(['loss'], loc = 'upper right')
-plt.xlabel('the iteration') #设置x轴标签为 “the iteration”，表示横轴表示的是迭代次数。
-plt.ylabel('loss') #设置y轴标签为 “loss”，表示纵轴表示的是损失值。
-plt.title('loss', fontsize = 20) #设置子图的标题为“cenn external”，表示这是关于外域能量损失的图表。参数 fontsize=20：标题的字体大小为20。
+    plt.close(fig)
 
 
 # --------------------------------------------------------------------------------
@@ -1444,12 +1481,13 @@ x_points = testpoints[np.abs(testpoints[:, 0] - 2) < tolerance] #x=2
 # 分为二部分
 x1 = x_points[x_points[:, 1] >= 1]
 x2 = x_points[x_points[:, 1] <= 1]
-np.savetxt("x1.csv", x1, delimiter=',', fmt='%f')
-np.savetxt("x2.csv", x2, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "x1.csv", x1, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "x2.csv", x2, delimiter=',', fmt='%f')
 
 _, _, x_SVonMises1 = evaluate_model(x1, E1, nu1)
 _, _, x_SVonMises2 = evaluate_model(x2, E2, nu2)
 
-np.savetxt("x_points_x2.csv", x_points, delimiter=',', fmt='%f')
-np.savetxt("x_SVonMises1_x2.csv", x_SVonMises1, delimiter=',', fmt='%f')
-np.savetxt("x_SVonMises2_x2.csv", x_SVonMises2, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "x_points_x2.csv", x_points, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "x_SVonMises1_x2.csv", x_SVonMises1, delimiter=',', fmt='%f')
+np.savetxt(RESULTS_DIR / "x_SVonMises2_x2.csv", x_SVonMises2, delimiter=',', fmt='%f')
+print(f"Results saved to: {RESULTS_DIR}")
